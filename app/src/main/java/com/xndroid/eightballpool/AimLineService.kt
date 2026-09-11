@@ -1,6 +1,7 @@
 package com.xndroid.eightballpool
 
 import android.app.*
+import android.content.Context
 import android.content.Intent
 import android.graphics.*
 import android.hardware.display.DisplayManager
@@ -318,7 +319,7 @@ class AimLineService : Service() {
                 BallDetector.BallType.STRIPE -> {
                     // Draw white base
                     ballPaint.color = Color.WHITE
-                    ballPaint.style = Paint.Color.WHITE
+                    ballPaint.style = Paint.Style.FILL
                     canvas.drawCircle(ball.x, ball.y, radius, ballPaint)
                     
                     // Draw colored stripe

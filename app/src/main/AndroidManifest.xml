@@ -35,6 +35,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".AimLineSettingsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.EightBallPool" />
+
         <service
             android:name=".AimLineService"
             android:exported="false"
