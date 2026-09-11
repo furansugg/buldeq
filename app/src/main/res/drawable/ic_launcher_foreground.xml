@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- 8 ball icon -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M54,54m-40,0a40,40 0,1 1,80 0a40,40 0,1 1,-80 0" />
+    
+    <!-- 8 text -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M46,44c0,-4.42 3.58,-8 8,-8s8,3.58 8,8c0,3.31 -2.01,6.15 -4.87,7.35L58,54v2h-8v-2l0.87,-0.65C48.01,50.15 46,47.31 46,44zM52,42c2.21,0 4,1.79 4,4s-1.79,4 -4,4 -4,-1.79 -4,-4 1.79,-4 4,-4zM50,56h8v2h-8z" />
+    
+    <!-- Crosshair -->
+    <path
+        android:fillColor="#FFFF0000"
+        android:pathData="M54,20L54,30M54,78L54,88M20,54L30,54M78,54L88,54"
+        android:strokeWidth="3"
+        android:strokeColor="#FFFF0000" />
+</vector>
