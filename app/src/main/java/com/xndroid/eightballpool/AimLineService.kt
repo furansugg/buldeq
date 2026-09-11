@@ -4,6 +4,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.*
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -29,12 +30,12 @@ class AimLineService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var captureJob: Job? = null
 
-    private var screenWidth = 1080
-    private var screenHeight = 1920
+    private var screenWidth = 1920
+    private var screenHeight = 1080
     private var screenDensity = DisplayMetrics.DENSITY_DEFAULT
 
-    private var captureWidth = 540
-    private var captureHeight = 960
+    private var captureWidth = 960
+    private var captureHeight = 540
 
     private lateinit var ballDetector: BallDetector
 
@@ -48,11 +49,15 @@ class AimLineService : Service() {
         createOverlay()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        getScreenMetrics()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Must call startForeground immediately to avoid ForegroundServiceDidNotStartInTimeException
         startForegroundNotification()
 
-        val resultCode = intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED) 
+        val resultCode = intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED)
             ?: Activity.RESULT_CANCELED
         val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent?.getParcelableExtra("data", Intent::class.java)
@@ -89,8 +94,10 @@ class AimLineService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val windowMetrics = windowManager?.currentWindowMetrics
                 val bounds = windowMetrics?.bounds
-                screenWidth = bounds?.width() ?: 1080
-                screenHeight = bounds?.height() ?: 1920
+                val rawW = bounds?.width() ?: 1920
+                val rawH = bounds?.height() ?: 1080
+                screenWidth = maxOf(rawW, rawH)
+                screenHeight = minOf(rawW, rawH)
                 screenDensity = resources.displayMetrics.densityDpi
             } else {
                 @Suppress("DEPRECATION")
@@ -98,18 +105,20 @@ class AimLineService : Service() {
                 val metrics = DisplayMetrics()
                 @Suppress("DEPRECATION")
                 display?.getRealMetrics(metrics)
-                screenWidth = metrics.widthPixels
-                screenHeight = metrics.heightPixels
+                val rawW = metrics.widthPixels
+                val rawH = metrics.heightPixels
+                screenWidth = maxOf(rawW, rawH)
+                screenHeight = minOf(rawW, rawH)
                 screenDensity = metrics.densityDpi
             }
         } catch (e: Exception) {
-            screenWidth = 1080
-            screenHeight = 1920
+            screenWidth = 1920
+            screenHeight = 1080
             screenDensity = DisplayMetrics.DENSITY_DEFAULT
         }
 
-        captureWidth = (screenWidth / 2).coerceAtLeast(360)
-        captureHeight = (screenHeight / 2).coerceAtLeast(640)
+        captureWidth = (screenWidth / 2).coerceAtLeast(640)
+        captureHeight = (screenHeight / 2).coerceAtLeast(360)
         ballDetector.width = screenWidth
         ballDetector.height = screenHeight
     }
@@ -176,7 +185,7 @@ class AimLineService : Service() {
 
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("8BP Aim Assist Active")
-            .setContentText("Drawing aim line overlay")
+            .setContentText("Drawing 3-line aim assist overlay")
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -198,7 +207,6 @@ class AimLineService : Service() {
             val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = projectionManager.getMediaProjection(resultCode, data)
 
-            // Android 14+ requires registering a callback before creating virtual display
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     stopScreenCapture()
@@ -239,11 +247,11 @@ class AimLineService : Service() {
 
     private fun startCaptureLoop() {
         captureJob = serviceScope.launch {
-            val scaleX = screenWidth.toFloat() / captureWidth.toFloat()
-            val scaleY = screenHeight.toFloat() / captureHeight.toFloat()
-
             while (isActive) {
                 try {
+                    val scaleX = screenWidth.toFloat() / captureWidth.toFloat()
+                    val scaleY = screenHeight.toFloat() / captureHeight.toFloat()
+
                     val image = imageReader?.acquireLatestImage()
                     if (image != null) {
                         try {
@@ -260,7 +268,7 @@ class AimLineService : Service() {
                 } catch (e: Exception) {
                     // Prevent frame crashes
                 }
-                delay(66) // ~15fps is optimal for battery and CPU
+                delay(50) // ~20fps smooth tracking
             }
         }
     }
@@ -296,50 +304,90 @@ class AimLineService : Service() {
     inner class AimOverlayView(context: Context) : View(context) {
 
         init {
-            // Needed for BlurMaskFilter on hardware accelerated canvas
             setLayerType(LAYER_TYPE_SOFTWARE, null)
         }
 
-        private val aimLinePaint = Paint().apply {
-            color = Color.RED
-            strokeWidth = 5f
+        // Cue to ghost line
+        private val cueLinePaint = Paint().apply {
+            color = Color.WHITE
+            strokeWidth = 4.5f
             style = Paint.Style.STROKE
             isAntiAlias = true
         }
 
-        private val aimLineGlowPaint = Paint().apply {
-            color = Color.argb(120, 255, 60, 60)
-            strokeWidth = 14f
+        private val cueLineGlowPaint = Paint().apply {
+            color = Color.argb(100, 255, 255, 255)
+            strokeWidth = 12f
             style = Paint.Style.STROKE
             isAntiAlias = true
-            maskFilter = BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL)
+            maskFilter = BlurMaskFilter(6f, BlurMaskFilter.Blur.NORMAL)
         }
 
-        private val ballPaint = Paint().apply {
+        // Ghost ball ring
+        private val ghostBallPaint = Paint().apply {
+            color = Color.WHITE
+            strokeWidth = 3.5f
+            style = Paint.Style.STROKE
             isAntiAlias = true
+        }
+
+        private val ghostBallInnerPaint = Paint().apply {
+            color = Color.argb(80, 255, 255, 255)
             style = Paint.Style.FILL
+            isAntiAlias = true
+        }
+
+        // Target ball trajectory line (extended + bounce)
+        private val targetLinePaint = Paint().apply {
+            color = Color.rgb(255, 60, 60) // Laser Red
+            strokeWidth = 4.5f
+            style = Paint.Style.STROKE
+            isAntiAlias = true
+        }
+
+        private val targetLineBouncePaint = Paint().apply {
+            color = Color.rgb(255, 120, 60) // Orange on cushion bounce
+            strokeWidth = 4.0f
+            style = Paint.Style.STROKE
+            pathEffect = DashPathEffect(floatArrayOf(16f, 8f), 0f)
+            isAntiAlias = true
+        }
+
+        // Cue deflection line (90-degree tangent)
+        private val cueDeflectPaint = Paint().apply {
+            color = Color.rgb(80, 220, 255) // Cyan deflection
+            strokeWidth = 4.0f
+            style = Paint.Style.STROKE
+            isAntiAlias = true
+        }
+
+        private val bouncePointPaint = Paint().apply {
+            color = Color.YELLOW
+            style = Paint.Style.FILL
+            isAntiAlias = true
+        }
+
+        // Pocket indicator
+        private val pocketGlowPaint = Paint().apply {
+            color = Color.argb(160, 50, 255, 50) // Green target glow
+            style = Paint.Style.STROKE
+            strokeWidth = 6f
+            isAntiAlias = true
+            maskFilter = BlurMaskFilter(10f, BlurMaskFilter.Blur.NORMAL)
+        }
+
+        private val pocketRingPaint = Paint().apply {
+            color = Color.GREEN
+            style = Paint.Style.STROKE
+            strokeWidth = 4f
+            isAntiAlias = true
         }
 
         private val textPaint = Paint().apply {
-            color = Color.WHITE
-            textSize = 36f
+            color = Color.GREEN
+            textSize = 28f
             isAntiAlias = true
             setShadowLayer(4f, 2f, 2f, Color.BLACK)
-        }
-
-        private val pathPaint = Paint().apply {
-            color = Color.YELLOW
-            strokeWidth = 3f
-            style = Paint.Style.STROKE
-            pathEffect = DashPathEffect(floatArrayOf(20f, 10f), 0f)
-            isAntiAlias = true
-        }
-
-        private val pocketPaint = Paint().apply {
-            color = Color.YELLOW
-            isAntiAlias = true
-            style = Paint.Style.STROKE
-            strokeWidth = 4f
         }
 
         private var detectionResult: BallDetector.DetectionResult? = null
@@ -353,119 +401,63 @@ class AimLineService : Service() {
             super.onDraw(canvas)
 
             val result = detectionResult ?: return
+            val sol = result.solution
 
-            // Draw detected balls
-            for (ball in result.balls) {
-                drawBall(canvas, ball)
-            }
-
-            // Draw aim line if cue ball found
-            if (result.aimLine != null) {
-                drawAimLine(canvas, result.aimLine!!)
-            }
-
-            drawDebugInfo(canvas, result)
-        }
-
-        private fun drawBall(canvas: Canvas, ball: BallDetector.BallInfo) {
-            val radius = ball.radius.coerceAtLeast(16f)
-
-            when (ball.type) {
-                BallDetector.BallType.CUE -> {
-                    ballPaint.color = Color.WHITE
-                    ballPaint.style = Paint.Style.FILL
-                    canvas.drawCircle(ball.x, ball.y, radius, ballPaint)
-
-                    ballPaint.color = Color.GRAY
-                    ballPaint.style = Paint.Style.STROKE
-                    ballPaint.strokeWidth = 3f
-                    canvas.drawCircle(ball.x, ball.y, radius, ballPaint)
-                }
-                BallDetector.BallType.EIGHT -> {
-                    ballPaint.color = Color.BLACK
-                    ballPaint.style = Paint.Style.FILL
-                    canvas.drawCircle(ball.x, ball.y, radius, ballPaint)
-
-                    val numberPaint = Paint().apply {
-                        color = Color.WHITE
-                        textSize = radius * 1.1f
-                        textAlign = Paint.Align.CENTER
-                        isAntiAlias = true
-                    }
-                    canvas.drawText("8", ball.x, ball.y + radius * 0.4f, numberPaint)
-                }
-                BallDetector.BallType.SOLID -> {
-                    ballPaint.color = ball.color
-                    ballPaint.style = Paint.Style.FILL
-                    canvas.drawCircle(ball.x, ball.y, radius, ballPaint)
-                }
-                BallDetector.BallType.STRIPE -> {
-                    ballPaint.color = Color.WHITE
-                    ballPaint.style = Paint.Style.FILL
-                    canvas.drawCircle(ball.x, ball.y, radius, ballPaint)
-
-                    ballPaint.color = ball.color
-                    val stripeRect = RectF(
-                        ball.x - radius,
-                        ball.y - radius * 0.4f,
-                        ball.x + radius,
-                        ball.y + radius * 0.4f
-                    )
-                    canvas.drawRect(stripeRect, ballPaint)
-                }
-                BallDetector.BallType.UNKNOWN -> {
-                    ballPaint.color = Color.LTGRAY
-                    ballPaint.style = Paint.Style.FILL
-                    canvas.drawCircle(ball.x, ball.y, radius, ballPaint)
-                }
-            }
-        }
-
-        private fun drawAimLine(canvas: Canvas, aimLine: BallDetector.AimLine) {
-            // Glow line
-            canvas.drawLine(
-                aimLine.startX, aimLine.startY,
-                aimLine.endX, aimLine.endY,
-                aimLineGlowPaint
-            )
-
-            // Center solid line
-            canvas.drawLine(
-                aimLine.startX, aimLine.startY,
-                aimLine.endX, aimLine.endY,
-                aimLinePaint
-            )
-
-            // Target path to pocket
-            if (aimLine.targetPath != null) {
+            if (sol != null) {
+                // 1. Draw Cue to Ghost line (with subtle glow)
                 canvas.drawLine(
-                    aimLine.targetPath!!.startX, aimLine.targetPath!!.startY,
-                    aimLine.targetPath!!.endX, aimLine.targetPath!!.endY,
-                    pathPaint
+                    sol.cueToGhostLine.startX, sol.cueToGhostLine.startY,
+                    sol.cueToGhostLine.endX, sol.cueToGhostLine.endY,
+                    cueLineGlowPaint
                 )
+                canvas.drawLine(
+                    sol.cueToGhostLine.startX, sol.cueToGhostLine.startY,
+                    sol.cueToGhostLine.endX, sol.cueToGhostLine.endY,
+                    cueLinePaint
+                )
+
+                // 2. Draw Ghost Ball (circle at impact position)
+                canvas.drawCircle(sol.ghostX, sol.ghostY, sol.ballRadius, ghostBallInnerPaint)
+                canvas.drawCircle(sol.ghostX, sol.ghostY, sol.ballRadius, ghostBallPaint)
+
+                // Crosshair in ghost ball
+                val crossR = sol.ballRadius * 0.4f
+                canvas.drawLine(sol.ghostX - crossR, sol.ghostY, sol.ghostX + crossR, sol.ghostY, ghostBallPaint)
+                canvas.drawLine(sol.ghostX, sol.ghostY - crossR, sol.ghostX, sol.ghostY + crossR, ghostBallPaint)
+
+                // 3. Draw Extended Target Ball Path (with cushion bounces)
+                for (seg in sol.targetBallPath) {
+                    val paint = if (seg.isBounce) targetLineBouncePaint else targetLinePaint
+                    canvas.drawLine(seg.startX, seg.startY, seg.endX, seg.endY, paint)
+
+                    if (seg.isBounce) {
+                        canvas.drawCircle(seg.startX, seg.startY, 6f, bouncePointPaint)
+                    }
+                }
+
+                // 4. Draw Cue Ball Deflection Path (90-degree tangent)
+                for (seg in sol.cueDeflectionPath) {
+                    canvas.drawLine(seg.startX, seg.startY, seg.endX, seg.endY, cueDeflectPaint)
+                    if (seg.isBounce) {
+                        canvas.drawCircle(seg.startX, seg.startY, 5f, bouncePointPaint)
+                    }
+                }
+
+                // 5. Highlight Target Pocket if on target
+                if (sol.targetPocket != null) {
+                    canvas.drawCircle(sol.targetPocket.x, sol.targetPocket.y, sol.targetPocket.radius, pocketGlowPaint)
+                    canvas.drawCircle(sol.targetPocket.x, sol.targetPocket.y, sol.targetPocket.radius, pocketRingPaint)
+                }
             }
 
-            // Pocket indicator
-            if (aimLine.pocketX != null && aimLine.pocketY != null) {
-                canvas.drawCircle(aimLine.pocketX!!, aimLine.pocketY!!, 26f, pocketPaint)
-            }
+            // Top Status Badge
+            drawStatusBadge(canvas, sol != null)
         }
 
-        private fun drawDebugInfo(canvas: Canvas, result: BallDetector.DetectionResult) {
-            textPaint.textSize = 28f
-            textPaint.color = Color.GREEN
-            canvas.drawText("Balls: ${result.balls.size}", 30f, 100f, textPaint)
-
-            if (result.aimLine != null) {
-                textPaint.color = Color.RED
-                val angle = Math.toDegrees(
-                    Math.atan2(
-                        (result.aimLine!!.endY - result.aimLine!!.startY).toDouble(),
-                        (result.aimLine!!.endX - result.aimLine!!.startX).toDouble()
-                    )
-                )
-                canvas.drawText("Aim: ${angle.toInt()}°", 30f, 135f, textPaint)
-            }
+        private fun drawStatusBadge(canvas: Canvas, active: Boolean) {
+            textPaint.color = if (active) Color.GREEN else Color.argb(180, 255, 180, 50)
+            val status = if (active) "8BP AIM: LOCKED (3 LINES + BANK)" else "8BP AIM: SCANNING..."
+            canvas.drawText(status, 40f, 60f, textPaint)
         }
     }
 }
