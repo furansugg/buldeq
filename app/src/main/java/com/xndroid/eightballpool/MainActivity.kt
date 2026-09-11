@@ -117,20 +117,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startAimLineService(resultCode: Int, data: Intent) {
-        val serviceIntent = Intent(this, AimLineService::class.java).apply {
-            putExtra("resultCode", resultCode)
-            putExtra("data", data)
-        }
+        try {
+            val serviceIntent = Intent(this, AimLineService::class.java).apply {
+                putExtra("resultCode", resultCode)
+                putExtra("data", data)
+            }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
-        }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
 
-        isServiceRunning = true
-        updateUI()
-        Toast.makeText(this, "Aim assist started", Toast.LENGTH_SHORT).show()
+            isServiceRunning = true
+            updateUI()
+            Toast.makeText(this, "Aim assist started", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun stopAimLineService() {

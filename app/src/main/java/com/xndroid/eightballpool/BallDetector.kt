@@ -47,46 +47,23 @@ class BallDetector {
         val timestamp: Long
     )
 
-    // Known ball colors (HSV ranges)
-    private val ballColors = mapOf(
-        // Ball ID to Hue range
-        1 to floatArrayOf(0f, 10f),        // Yellow
-        2 to floatArrayOf(200f, 260f),     // Blue
-        3 to floatArrayOf(100f, 140f),     // Red
-        4 to floatArrayOf(270f, 330f),     // Purple
-        5 to floatArrayOf(20f, 50f),       // Orange
-        6 to floatArrayOf(120f, 160f),     // Green
-        7 to floatArrayOf(330f, 360f),     // Maroon
-        9 to floatArrayOf(0f, 10f),        // Yellow stripe
-        10 to floatArrayOf(200f, 260f),    // Blue stripe
-        11 to floatArrayOf(100f, 140f),    // Red stripe
-        12 to floatArrayOf(270f, 330f),    // Purple stripe
-        13 to floatArrayOf(20f, 50f),      // Orange stripe
-        14 to floatArrayOf(120f, 160f),    // Green stripe
-        15 to floatArrayOf(330f, 360f)     // Maroon stripe
-    )
-
     // Pocket positions (normalized 0-1)
     private val pockets = listOf(
-        Pair(0.05f, 0.05f),    // Top-left
-        Pair(0.5f, 0.03f),     // Top-center
-        Pair(0.95f, 0.05f),    // Top-right
-        Pair(0.05f, 0.95f),    // Bottom-left
-        Pair(0.5f, 0.97f),     // Bottom-center
-        Pair(0.95f, 0.95f)     // Bottom-right
+        Pair(0.06f, 0.08f),    // Top-left
+        Pair(0.50f, 0.06f),    // Top-center
+        Pair(0.94f, 0.08f),    // Top-right
+        Pair(0.06f, 0.92f),    // Bottom-left
+        Pair(0.50f, 0.94f),    // Bottom-center
+        Pair(0.94f, 0.92f)     // Bottom-right
     )
 
-    private var lastCueBall: BallInfo? = null
-    private var lastBalls = listOf<BallInfo>()
+    var width: Int = 1080
+    var height: Int = 1920
 
-    fun detect(bitmap: Bitmap): DetectionResult {
-        val balls = detectBalls(bitmap)
+    fun detect(bitmap: Bitmap, scaleX: Float = 1f, scaleY: Float = 1f): DetectionResult {
+        val balls = detectBalls(bitmap, scaleX, scaleY)
         val cueBall = balls.find { it.type == BallType.CUE }
         val aimLine = if (cueBall != null) calculateAimLine(cueBall, balls) else null
-
-        // Update state
-        lastCueBall = cueBall
-        lastBalls = balls
 
         return DetectionResult(
             balls = balls,
@@ -95,174 +72,153 @@ class BallDetector {
         )
     }
 
-    private fun detectBalls(bitmap: Bitmap): List<BallInfo> {
+    private fun detectBalls(bitmap: Bitmap, scaleX: Float, scaleY: Float): List<BallInfo> {
         val balls = mutableListOf<BallInfo>()
-        val width = bitmap.width
-        val height = bitmap.height
+        val bWidth = bitmap.width
+        val bHeight = bitmap.height
 
-        // Sample pixels to find ball centers
-        val sampleSize = 4
-        val ballCandidates = mutableListOf<Triple<Int, Int, Int>>() // x, y, color
+        // Only scan table area (middle 85%)
+        val startX = (bWidth * 0.05f).toInt()
+        val endX = (bWidth * 0.95f).toInt()
+        val startY = (bHeight * 0.10f).toInt()
+        val endY = (bHeight * 0.90f).toInt()
 
-        // Scan for white regions (cue ball)
-        for (y in 0 until height step sampleSize) {
-            for (x in 0 until width step sampleSize) {
+        val sampleStep = 6
+        val candidates = ArrayList<Triple<Int, Int, Int>>(300)
+
+        // Fast pixel scan with max cap
+        scanLoop@ for (y in startY until endY step sampleStep) {
+            for (x in startX until endX step sampleStep) {
+                if (candidates.size >= 250) break@scanLoop
+
                 val pixel = bitmap.getPixel(x, y)
                 val r = Color.red(pixel)
                 val g = Color.green(pixel)
                 val b = Color.blue(pixel)
 
-                // Check for white (cue ball)
+                // Filter out green table felt
+                if (isTableGreen(r, g, b)) continue
+
                 if (isWhite(r, g, b)) {
-                    ballCandidates.add(Triple(x, y, Color.WHITE))
-                }
-                // Check for black (8 ball)
-                else if (isBlack(r, g, b)) {
-                    ballCandidates.add(Triple(x, y, Color.BLACK))
-                }
-                // Check for colored balls
-                else if (isColored(r, g, b)) {
-                    ballCandidates.add(Triple(x, y, pixel))
+                    candidates.add(Triple(x, y, Color.WHITE))
+                } else if (isBlack(r, g, b)) {
+                    candidates.add(Triple(x, y, Color.BLACK))
+                } else if (isColoredBall(r, g, b)) {
+                    candidates.add(Triple(x, y, pixel))
                 }
             }
         }
 
-        // Cluster nearby candidates into balls
-        val clustered = clusterBalls(ballCandidates, width, height)
+        if (candidates.isEmpty()) return balls
 
-        // Create BallInfo objects
-        for (cluster in clustered) {
-            val avgX = cluster.map { it.first }.average().toFloat()
-            val avgY = cluster.map { it.second }.average().toFloat()
-            val avgColor = cluster.map { it.third }.average().toInt()
-            val radius = calculateRadius(cluster, avgX, avgY)
+        // Grid clustering to prevent O(N^2) explosion
+        val clusterDist = (bWidth * 0.04f).coerceAtLeast(12f)
+        val clusters = clusterFast(candidates, clusterDist)
+
+        for (cluster in clusters) {
+            if (cluster.size < 3) continue
+
+            var sumX = 0f
+            var sumY = 0f
+            for (item in cluster) {
+                sumX += item.first
+                sumY += item.second
+            }
+            val avgX = sumX / cluster.size
+            val avgY = sumY / cluster.size
+            val avgColor = cluster[0].third
+
+            val screenX = avgX * scaleX
+            val screenY = avgY * scaleY
+            val radius = (clusterDist * scaleX * 0.9f).coerceIn(16f, 40f)
 
             val type = when {
                 avgColor == Color.WHITE -> BallType.CUE
                 avgColor == Color.BLACK -> BallType.EIGHT
-                isStriped(cluster, avgX, avgY, radius) -> BallType.STRIPE
-                isColored(Color.red(avgColor), Color.green(avgColor), Color.blue(avgColor)) -> BallType.SOLID
-                else -> BallType.UNKNOWN
+                cluster.any { it.third == Color.WHITE } && cluster.any { it.third != Color.WHITE && it.third != Color.BLACK } -> BallType.STRIPE
+                else -> BallType.SOLID
             }
 
             balls.add(BallInfo(
-                x = avgX,
-                y = avgY,
+                x = screenX,
+                y = screenY,
                 radius = radius,
                 color = avgColor,
                 type = type,
-                confidence = cluster.size.toFloat() / 100f
+                confidence = 0.9f
             ))
+
+            if (balls.size >= 16) break
         }
 
         return balls
     }
 
+    private fun isTableGreen(r: Int, g: Int, b: Int): Boolean {
+        // Typical 8BP felt green: green dominant, moderate brightness
+        return g > r + 15 && g > b + 10 && g in 40..170
+    }
+
     private fun isWhite(r: Int, g: Int, b: Int): Boolean {
-        return r > 200 && g > 200 && b > 200 && abs(r - g) < 30 && abs(g - b) < 30
+        return r > 215 && g > 215 && b > 215
     }
 
     private fun isBlack(r: Int, g: Int, b: Int): Boolean {
-        return r < 50 && g < 50 && b < 50
+        return r < 35 && g < 35 && b < 35
     }
 
-    private fun isColored(r: Int, g: Int, b: Int): Boolean {
-        // Check if color is saturated enough to be a ball
+    private fun isColoredBall(r: Int, g: Int, b: Int): Boolean {
         val max = maxOf(r, g, b)
         val min = minOf(r, g, b)
         val saturation = if (max > 0) (max - min).toFloat() / max else 0f
-
-        return saturation > 0.3f && max > 80
+        return saturation > 0.45f && max > 100
     }
 
-    private fun isStriped(cluster: List<Triple<Int, Int, Int>>, centerX: Float, centerY: Float, radius: Float): Boolean {
-        // Check if the ball has both white and colored pixels
-        var whiteCount = 0
-        var coloredCount = 0
-
-        for ((x, y, color) in cluster) {
-            val dist = sqrt(((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY)).toDouble())
-            if (dist < radius * 1.2) {
-                if (color == Color.WHITE) {
-                    whiteCount++
-                } else if (color != Color.BLACK) {
-                    coloredCount++
-                }
-            }
-        }
-
-        // Striped balls have roughly equal white and colored pixels
-        return whiteCount > 5 && coloredCount > 5 && abs(whiteCount - coloredCount) < whiteCount * 0.5
-    }
-
-    private fun clusterBalls(candidates: List<Triple<Int, Int, Int>>, width: Int, height: Int): List<List<Triple<Int, Int, Int>>> {
-        val minClusterSize = 10
-        val maxClusterDist = width * 0.05f // 5% of screen width
-
+    private fun clusterFast(candidates: List<Triple<Int, Int, Int>>, maxDist: Float): List<List<Triple<Int, Int, Int>>> {
         val clusters = mutableListOf<MutableList<Triple<Int, Int, Int>>>()
-        val used = BooleanArray(candidates.size)
+        val maxDistSq = maxDist * maxDist
 
-        for (i in candidates.indices) {
-            if (used[i]) continue
-
-            val cluster = mutableListOf(candidates[i])
-            used[i] = true
-
-            for (j in i + 1 until candidates.size) {
-                if (used[j]) continue
-
-                val dist = sqrt(
-                    ((candidates[i].first - candidates[j].first) * (candidates[i].first - candidates[j].first) +
-                     (candidates[i].second - candidates[j].second) * (candidates[i].second - candidates[j].second)).toDouble()
-                )
-
-                if (dist < maxClusterDist) {
-                    cluster.add(candidates[j])
-                    used[j] = true
+        for (cand in candidates) {
+            var added = false
+            for (cluster in clusters) {
+                val center = cluster[0]
+                val dx = cand.first - center.first
+                val dy = cand.second - center.second
+                if (dx * dx + dy * dy < maxDistSq) {
+                    cluster.add(cand)
+                    added = true
+                    break
                 }
             }
-
-            if (cluster.size >= minClusterSize) {
-                clusters.add(cluster)
+            if (!added && clusters.size < 20) {
+                clusters.add(mutableListOf(cand))
             }
         }
 
         return clusters
     }
 
-    private fun calculateRadius(cluster: List<Triple<Int, Int, Int>>, centerX: Float, centerY: Float): Float {
-        var maxDist = 0f
-        for ((x, y, _) in cluster) {
-            val dist = sqrt(((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY)).toFloat())
-            if (dist > maxDist) maxDist = dist
-        }
-        return maxDist
-    }
-
     private fun calculateAimLine(cueBall: BallInfo, allBalls: List<BallInfo>): AimLine? {
-        // Find the best target ball
         val targetBall = findBestTarget(cueBall, allBalls) ?: return null
 
-        // Calculate aim angle
         val dx = targetBall.x - cueBall.x
         val dy = targetBall.y - cueBall.y
         val angle = Math.atan2(dy.toDouble(), dx.toDouble())
 
-        // Calculate extended aim line
-        val lineLength = 800f // pixels
+        val lineLength = 900f
         val endX = cueBall.x + (Math.cos(angle) * lineLength).toFloat()
         val endY = cueBall.y + (Math.sin(angle) * lineLength).toFloat()
 
-        // Find best pocket for this shot
         val pocket = findBestPocket(targetBall)
 
-        // Calculate target ball path
         val targetPath = if (pocket != null) {
+            val pX = pocket.first * width
+            val pY = pocket.second * height
             TargetPath(
                 startX = targetBall.x,
                 startY = targetBall.y,
-                endX = pocket.first * cueBall.x * 2, // Simplified
-                endY = pocket.second * cueBall.y * 2
+                endX = pX,
+                endY = pY
             )
         } else null
 
@@ -279,28 +235,17 @@ class BallDetector {
 
     private fun findBestTarget(cueBall: BallInfo, allBalls: List<BallInfo>): BallInfo? {
         var bestBall: BallInfo? = null
-        var bestScore = -Float.MAX_VALUE
+        var minDistance = Float.MAX_VALUE
 
         for (ball in allBalls) {
-            if (ball.type == BallType.CUE || ball.type == BallType.UNKNOWN) continue
+            if (ball.type == BallType.CUE) continue
 
-            // Calculate score based on distance and angle
-            val distToCue = sqrt(
-                ((ball.x - cueBall.x) * (ball.x - cueBall.x) +
-                 (ball.y - cueBall.y) * (ball.y - cueBall.y)).toDouble()
-            ).toFloat()
+            val dx = ball.x - cueBall.x
+            val dy = ball.y - cueBall.y
+            val dist = sqrt((dx * dx + dy * dy).toDouble()).toFloat()
 
-            // Prefer closer balls
-            val distanceScore = 1f / (distToCue + 1f)
-
-            // Prefer balls that are not blocked by other balls
-            val clearPath = hasClearPath(cueBall, ball, allBalls)
-            val pathScore = if (clearPath) 1f else 0.3f
-
-            val score = distanceScore * pathScore
-
-            if (score > bestScore) {
-                bestScore = score
+            if (dist > 20f && dist < minDistance) {
+                minDistance = dist
                 bestBall = ball
             }
         }
@@ -308,47 +253,17 @@ class BallDetector {
         return bestBall
     }
 
-    private fun hasClearPath(from: BallInfo, to: BallInfo, allBalls: List<BallInfo>): Boolean {
-        val dx = to.x - from.x
-        val dy = to.y - from.y
-        val dist = sqrt((dx * dx + dy * dy).toDouble()).toFloat()
-
-        for (ball in allBalls) {
-            if (ball == from || ball == to) continue
-
-            // Check if ball blocks the path
-            val t = maxOf(0f, minOf(1f,
-                ((ball.x - from.x) * dx + (ball.y - from.y) * dy) / (dist * dist)
-            ))
-
-            val projX = from.x + t * dx
-            val projY = from.y + t * dy
-
-            val distToLine = sqrt(
-                ((ball.x - projX) * (ball.x - projX) +
-                 (ball.y - projY) * (ball.y - projY)).toDouble()
-            ).toFloat()
-
-            if (distToLine < ball.radius + to.radius) {
-                return false
-            }
-        }
-
-        return true
-    }
-
     private fun findBestPocket(ball: BallInfo): Pair<Float, Float>? {
         var bestPocket: Pair<Float, Float>? = null
         var bestDist = Float.MAX_VALUE
 
         for (pocket in pockets) {
-            val pocketX = pocket.first * 1080 // Assume 1080 width
-            val pocketY = pocket.second * 1920 // Assume 1920 height
+            val px = pocket.first * width
+            val py = pocket.second * height
 
-            val dist = sqrt(
-                ((ball.x - pocketX) * (ball.x - pocketX) +
-                 (ball.y - pocketY) * (ball.y - pocketY)).toDouble()
-            ).toFloat()
+            val dx = ball.x - px
+            val dy = ball.y - py
+            val dist = sqrt((dx * dx + dy * dy).toDouble()).toFloat()
 
             if (dist < bestDist) {
                 bestDist = dist
@@ -358,8 +273,4 @@ class BallDetector {
 
         return bestPocket
     }
-
-    // Public getters for settings
-    var width: Int = 1080
-    var height: Int = 1920
 }
